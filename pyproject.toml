@@ -11,7 +11,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "nemo-toolkit[asr]>=2.6.2",
     "nltk>=3.9.2",
-    "onnxruntime==1.14",
+    "onnxruntime==1.23.2",
 ]
 
 [tool.uv.sources]
