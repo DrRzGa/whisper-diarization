@@ -58,12 +58,11 @@ class TranscriptionEngine:
             model_name: str = PipelineConfig.DEFAULT_WHISPER_MODEL,
             device: str | None = None,
             batch_size: int = 8,
-            suppress_numerals: bool = False,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model_name = model_name
         self.batch_size = batch_size
-        self.compute_type = "float16" if self.device == "cuda" else "int8"
+        self.compute_type = self._determine_compute_type()
 
         # State placeholders
         self.audio_waveform: Any = None
@@ -72,7 +71,26 @@ class TranscriptionEngine:
         self.suppress_numerals: bool = False
         self.transcribe_model = self.make_transcribe_model()
         self.diarizer = MSDDDiarizer(device=self.device)
+        self.alignment_model, self.alignment_tokenizer = load_alignment_model(
+            self.device, dtype=torch.float16 if self.device == "cuda" else torch.float32
+        )
+        self.punct_model = PunctuationModel(model=PipelineConfig.PUNCT_MODEL)
 
+
+    def _determine_compute_type(self) -> str:
+        """Checks GPU hardware capabilities to select the optimal compute type."""
+        if self.device == "cpu":
+            return "int8"
+
+        if torch.cuda.is_available():
+            major, _ = torch.cuda.get_device_capability()
+            # Compute Capability 7.0+ (Volta, Turing, Ampere, etc.) supports FP16 well.
+            if major >= 7:
+                logging.info(f"GPU detected with Compute Capability {major}. Using float16.")
+                return "float16"
+
+            logging.warning(f"Old GPU detected (Compute Capability {major}). Falling back to float32.")
+        return "float32"
 
     def make_transcribe_model(self) -> faster_whisper.WhisperModel |  faster_whisper.BatchedInferencePipeline:
         model = faster_whisper.WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
@@ -122,8 +140,12 @@ class TranscriptionEngine:
         wsm = get_realigned_ws_mapping_with_punctuation(wsm)
         return get_sentences_speaker_mapping(wsm, speaker_ts)
 
-    def run_full_pipeline(self, audio_path: str, language: str | None = None, stemming: bool = True,
-                          suppress_numerals: bool = False) -> list[dict]:
+    def run_full_pipeline(
+            self, audio_path: str,
+            language: str | None = None,
+            stemming: bool = True,
+            suppress_numerals: bool = False
+    ) -> list[dict]:
         """Orchestrates the granular stages into a single workflow."""
         pid_dir = f"{PipelineConfig.TEMP_DIR_PREFIX}_{os.getpid()}"
 
@@ -133,8 +155,8 @@ class TranscriptionEngine:
             word_ts, speaker_ts = self.align_and_diarize(transcript)
             return self.post_process(word_ts, speaker_ts)
         finally:
-            cleanup(os.path.join(os.getcwd(), PipelineConfig.TEMP_DIR_PREFIX))
-
+            # cleanup(os.path.join(os.getcwd(), PipelineConfig.TEMP_DIR_PREFIX))
+            pass
     # --- Private Internal Helpers ---
 
     def _isolate_vocals(self, audio_path: str, output_dir: str) -> str:
@@ -153,20 +175,21 @@ class TranscriptionEngine:
 
 
     def _run_alignment(self, transcript: str) -> list[dict]:
-        model, tokenizer = load_alignment_model(
-            self.device, dtype=torch.float16 if self.device == "cuda" else torch.float32
-        )
+
+
         emissions, stride = generate_emissions(
-            model, torch.from_numpy(self.audio_waveform).to(model.dtype).to(model.device), batch_size=self.batch_size
+            self.alignment_model,
+            torch.from_numpy(self.audio_waveform).to(self.alignment_model.dtype).to(self.device),
+            batch_size=self.batch_size
         )
 
-        del model
-        torch.cuda.empty_cache()
+        # del model
+        # torch.cuda.empty_cache()
 
         tokens_starred, text_starred = preprocess_text(
             transcript, romanize=True, language=langs_to_iso[self.language_info.language]
         )
-        segments, scores, blank_token = get_alignments(emissions, tokens_starred, tokenizer)
+        segments, scores, blank_token = get_alignments(emissions, tokens_starred, self.alignment_tokenizer)
         spans = get_spans(tokens_starred, segments, blank_token)
         return postprocess_results(text_starred, spans, stride, scores)
 
@@ -174,9 +197,8 @@ class TranscriptionEngine:
         if self.language_info.language not in punct_model_langs:
             return wsm
 
-        punct_model = PunctuationModel(model=PipelineConfig.PUNCT_MODEL)
         words_list = [x["word"] for x in wsm]
-        labeled_words = punct_model.predict(words_list, chunk_size=230)
+        labeled_words = self.punct_model.predict(words_list, chunk_size=230)
 
         is_acronym = lambda x: re.fullmatch(PipelineConfig.ACRONYM_PATTERN, x)
 
