@@ -1,0 +1,20 @@
+[project]
+name = "whisper-diarization"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10.12"
+dependencies = [
+    "ctc-forced-aligner",
+    "deepmultilingualpunctuation",
+    "demucs",
+    "faster-whisper>=1.2.1",
+    "nemo-toolkit[asr]>=2.6.2",
+    "nltk>=3.9.2",
+    "onnxruntime==1.14",
+]
+
+[tool.uv.sources]
+deepmultilingualpunctuation = { git = "https://github.com/oliverguhr/deepmultilingualpunctuation.git" }
+demucs = { git = "https://github.com/MahmoudAshraf97/demucs.git" }
+ctc-forced-aligner = { git = "https://github.com/MahmoudAshraf97/ctc-forced-aligner.git" }
